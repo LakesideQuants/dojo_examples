@@ -65,3 +65,115 @@ class PassiveConcentratedLP(BasePolicy):
         if not self.has_invested:
             return self.inital_quote(obs)
         return []
+
+
+class Simple_LP_Deploy(BasePolicy):
+    """Provide liquidity passively to a pool in the sepcified price bounds."""
+
+    def __init__(self, agent: BaseAgent, lower_price: float, upper_price: float) -> None:
+        """Initialize the policy.
+
+        :param agent: The agent which is using this policy.
+        :param lower_price: A custom lower price.
+        :param upper_price: A custom upper price.
+        """
+        super().__init__(agent=agent)
+        self.lower_price_bound = Decimal(lower_price)
+        self.upper_price_bound = Decimal(upper_price)
+        self.has_invested = False
+
+        self.agent = agent
+
+        # status tracker
+        self.position_status_tracker = []
+
+    def fit(self):
+        pass
+
+    def inital_quote(self, obs: UniV3Obs) -> List[UniV3Action]:
+        pool_idx = 0
+        pool = obs.pools[pool_idx]
+        token0, token1 = obs.pool_tokens(pool)
+        self.wallet_portfolio = self.agent.erc20_portfolio()
+
+        token0, token1 = obs.pool_tokens(obs.pools[pool_idx])
+        decimals0 = money.get_decimals(self.agent.backend, token0)
+        decimals1 = money.get_decimals(self.agent.backend, token1)
+
+        lower_price_range = self.lower_price_bound
+        upper_price_range = self.upper_price_bound
+        tick_spacing = obs.tick_spacing(pool)
+
+        lower_tick = uniswapV3.price_to_tick(
+            lower_price_range, tick_spacing, [decimals0, decimals1]
+        )
+        upper_tick = uniswapV3.price_to_tick(
+            upper_price_range, tick_spacing, [decimals0, decimals1]
+        )
+        provide_action = UniV3Action(
+            agent=self.agent,
+            type="quote",
+            pool=pool,
+            quantities=[self.wallet_portfolio[token0], self.wallet_portfolio[token1]],
+            tick_range=(lower_tick, upper_tick),
+        )
+        self.has_invested = True
+        return [provide_action]
+
+    def predict(self, obs: UniV3Obs) -> List[UniV3Action]:
+        pool_idx = 0
+        pool = obs.pools[pool_idx]
+        token0, token1 = obs.pool_tokens(pool)
+
+        token0, token1 = obs.pool_tokens(obs.pools[pool_idx])
+        decimals0 = money.get_decimals(self.agent.backend, token0)
+        decimals1 = money.get_decimals(self.agent.backend, token1)
+
+        lower_price_range = self.lower_price_bound
+        upper_price_range = self.upper_price_bound
+        tick_spacing = obs.tick_spacing(pool)
+
+        lower_tick = uniswapV3.price_to_tick(
+            lower_price_range, tick_spacing, [decimals0, decimals1]
+        )
+        upper_tick = uniswapV3.price_to_tick(
+            upper_price_range, tick_spacing, [decimals0, decimals1]
+        )
+        self.position_status_tracker.append(
+            {
+                "liquidity": obs.liquidity(pool),
+                "nft_positions": [
+                    obs.nft_positions(nft_id[0])
+                    for key, nft_id in self.agent.erc721_portfolio().items()
+                ],
+                "pool_positions": obs.pool_positions(
+                    pool=pool,
+                    owner=self.agent.account.address,
+                    tick_lower=lower_tick,
+                    tick_upper=upper_tick,
+                ),
+                "lp_fees": [
+                    obs.lp_fees([nft_id[0]])
+                    for key, nft_id in self.agent.erc721_portfolio().items()
+                ],
+                "lp_quantities": [
+                    obs.lp_quantities([nft_id[0]])
+                    for key, nft_id in self.agent.erc721_portfolio().items()
+                ],
+            }
+        )
+        if not self.has_invested:
+            return self.inital_quote(obs)
+        if self.agent.done():
+            print("done")
+            # burn event
+            provide_action = UniV3Action(
+                agent=self.agent,
+                type="collect",
+                pool=pool,
+                quantities=[self.wallet_portfolio[token0], self.wallet_portfolio[token1]],
+                tick_range=(lower_tick, upper_tick),
+            )
+            return [provide_action]
+
+        return []
